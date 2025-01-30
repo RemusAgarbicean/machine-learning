@@ -6,8 +6,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_curve, auc, precision_recall_curve
 import matplotlib.pyplot as plt
 
 st.title('Detectarea fraudei in emailuri')
@@ -15,24 +16,24 @@ st.title('Detectarea fraudei in emailuri')
 st.sidebar.title('Navigare')
 page = st.sidebar.radio('Selecteaza pagina', ['Prezentare Modele', 'Aplicatie'])
 models = {
-                "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-                "Random Forest": RandomForestClassifier(random_state=42),
-                "Support Vector Machine": SVC(random_state=42),
-                "Gradient Boosting": GradientBoostingClassifier(random_state=42)
-        }
+    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+    "Random Forest": RandomForestClassifier(random_state=42),
+    "Naive Bayes": MultinomialNB(),  # Enable probability for ROC curve
+    "Gradient Boosting": GradientBoostingClassifier(random_state=42)
+}
+
 @st.cache_resource
 def get_vectorizers():
     tfidf_vectorizer_subject = TfidfVectorizer(max_features=1000)
     tfidf_vectorizer_body = TfidfVectorizer(max_features=1000)
     return tfidf_vectorizer_subject, tfidf_vectorizer_body
 
-
 @st.cache_resource
 def load_data():
-        df = pd.read_csv('CEAS_08.csv')
-        df.dropna(subset=['receiver'], inplace=True)
-        df['subject'].fillna('No Subject', inplace=True)
-        return df
+    df = pd.read_csv('CEAS_08.csv')
+    df.dropna(subset=['receiver'], inplace=True)
+    df['subject'].fillna('No Subject', inplace=True)
+    return df
 
 @st.cache_resource
 def create_features(df):
@@ -61,23 +62,27 @@ def create_features(df):
     st.session_state['feature_names'] = features.columns.tolist()
     return features
 
-
 @st.cache_resource
 def train_models(features, df, _models):
     X_train, X_test, y_train, y_test = train_test_split(features, df['label'], test_size=0.2, random_state=42)
     results = []
-    trained_models = {}  # NEW: Store fitted models
+    trained_models = {}  # Store fitted models
     
     for name, model in _models.items():
+        print (f"Trainig model: {name}")
         model.fit(X_train, y_train)  # Train model
-        trained_models[name] = model  # NEW: Store fitted model
+        trained_models[name] = model  # Store fitted model
         
         # Calculate metrics
         y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else [0] * len(X_test)
+        
         results.append({
             'Model': name,
             'Confusion Matrix': confusion_matrix(y_test, y_pred),
-            'Accuracy Score': accuracy_score(y_test, y_pred)
+            'Accuracy Score': accuracy_score(y_test, y_pred),
+            'ROC Curve': (roc_curve(y_test, y_pred_proba) if hasattr(model, "predict_proba") else None),
+            'Precision-Recall Curve': precision_recall_curve(y_test, y_pred_proba) if hasattr(model, "predict_proba") else None
         })
     
     return results, trained_models
@@ -180,8 +185,6 @@ if page == 'Prezentare Modele':
             îmbunătăți eficiența modelului de machine learning
                 ''')
 
-
-
     st.code('''
         @st.cache_resource
         def get_vectorizers():
@@ -189,7 +192,6 @@ if page == 'Prezentare Modele':
         tfidf_vectorizer_body = TfidfVectorizer(max_features=1000)
         return tfidf_vectorizer_subject, tfidf_vectorizer_body
             ''', language='python')
-
 
     st.write('''
             Combinăm caracteristicile extrase din coloanele urls, subject și body într-un singur DataFrame features. Acest DataFrame va fi folosit ulterior ca set de caracteristici pentru antrenarea modelului.
@@ -224,12 +226,10 @@ if page == 'Prezentare Modele':
         return features
             ''', language='python')
 
-
     st.write('''
             Împărțim setul de date în set de antrenare și set de testare folosind train_test_split.
             Vom folosi 80% din date pentru antrenare și 20% pentru testare.
             ''')
-
 
     st.code('''
             X_train, X_test, y_train, y_test = train_test_split(features, df['label'], test_size=0.2, random_state=42)
@@ -267,6 +267,56 @@ if page == 'Prezentare Modele':
     
             ''', language='python')
 
+    # Visualizations
+    st.header('Compararea performantelor')
+
+    # Confusion Matrix Heatmaps
+    st.subheader('Confusion Matrices')
+    for result in results:
+        st.write(f"Model: {result['Model']}")
+        fig, ax = plt.subplots()
+        sns.heatmap(result['Confusion Matrix'], annot=True, fmt='d', cmap='Blues', ax=ax)
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('Actual')
+        st.pyplot(fig)
+
+    # Accuracy Comparison Bar Plot
+    st.subheader('Accuracy Comparison')
+    accuracy_scores = [result['Accuracy Score'] for result in results]
+    model_names = [result['Model'] for result in results]
+    fig, ax = plt.subplots()
+    sns.barplot(x=model_names, y=accuracy_scores, ax=ax)
+    ax.set_ylabel('Accuracy Score')
+    ax.set_xlabel('Model')
+    st.pyplot(fig)
+
+    # ROC Curves
+    st.subheader('ROC Curves')
+    fig, ax = plt.subplots()
+    for result in results:
+        if result['ROC Curve'] is not None:
+            fpr, tpr, _ = result['ROC Curve']
+            roc_auc = auc(fpr, tpr)
+            ax.plot(fpr, tpr, label=f"{result['Model']} (AUC = {roc_auc:.2f})")
+    ax.plot([0, 1], [0, 1], 'k--')
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title('ROC Curve')
+    ax.legend()
+    st.pyplot(fig)
+
+    # Precision-Recall Curves
+    st.subheader('Precision-Recall Curves')
+    fig, ax = plt.subplots()
+    for result in results:
+        if result['Precision-Recall Curve'] is not None:
+            precision, recall, _ = result['Precision-Recall Curve']
+            ax.plot(recall, precision, label=f"{result['Model']}")
+    ax.set_xlabel('Recall')
+    ax.set_ylabel('Precision')
+    ax.set_title('Precision-Recall Curve')
+    ax.legend()
+    st.pyplot(fig)
 
     for result in results:
         st.write(f"Model: {result['Model']}")
@@ -275,7 +325,7 @@ if page == 'Prezentare Modele':
         st.write("="*60)
 
     st.write('''
-            Pentru că modelul Vector Support Machine a obținut cel mai bun scor de acuratețe, vom folosi acest model pentru a face predicții în aplicația noastra.
+            Pentru că modelul Random Forest a obținut cel mai bun scor de acuratețe, vom folosi acest model pentru a face predicții în aplicația noastra.
             ''')
 
 elif page == 'Aplicatie':
@@ -295,8 +345,6 @@ elif page == 'Aplicatie':
     def check_urls(text):
         urls = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
         return 1 if len(urls) > 0 else 0
-
-    
 
     if st.button('Predict'):
         urls = check_urls(body)
@@ -325,7 +373,7 @@ elif page == 'Aplicatie':
         # Align columns (no duplicates now)
         X = X.reindex(columns=st.session_state['feature_names'], fill_value=0)
         
-        prediction = trained_models["Support Vector Machine"].predict(X)  # Use stored model
+        prediction = trained_models["Random Forest"].predict(X)  # Use stored model
         
         if prediction[0] == 0:
             st.error('Există o șansă mare ca emailul să fie fraudulos!')
